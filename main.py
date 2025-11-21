@@ -538,13 +538,28 @@ class DiscordGateway(discord.Client):
     Forwards events to the UI thread to prevent freezing.
     """
     def __init__(self, app_ref: 'NexusApp'):
-        # Optimized Intent flags for faster startup (less initial data)
-        intents = discord.Intents.default()
-        intents.members = True 
-        intents.presences = True # Needed for online status dots
-        
-        super().__init__(intents=intents, chunk_guilds_at_startup=False)
         self.app = app_ref
+        
+        # --- COMPATIBILITY FIX ---
+        # Some versions of discord.py-self or older libs do not use Intents.
+        # We check if 'Intents' exists before trying to use it.
+        kwargs = {
+            "chunk_guilds_at_startup": False,
+            "status": discord.Status.online
+        }
+
+        if hasattr(discord, 'Intents'):
+            # Modern Library (2.0+)
+            intents = discord.Intents.default()
+            try:
+                intents.members = True 
+                intents.presences = True
+            except AttributeError:
+                pass # Some user-bot forks limit intent attributes
+            kwargs["intents"] = intents
+        
+        # Initialize the parent Client with the dynamic arguments
+        super().__init__(**kwargs)
 
     async def on_ready(self):
         logger.info(f"Gateway Established: {self.user}")
