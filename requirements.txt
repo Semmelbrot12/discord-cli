@@ -1,5 +1,6 @@
-termcolor
-colorama
-discord.py
-aioconsole
-keyboard
+textual>=0.41.0
+rich>=13.6.0
+discord.py-self>=2.1.0
+curl_cffi>=0.5.10
+aiofiles>=23.2.0
+pyperclip>=1.8.2
