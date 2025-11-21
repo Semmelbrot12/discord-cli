@@ -84,7 +84,6 @@ from textual.widgets import (
     Switch,
     TabbedContent,
     TabPane,
-    Toast,
     Tree,
 )
 from textual.widgets.option_list import Option
@@ -639,6 +638,7 @@ class NexusApp(App):
         asyncio.create_task(self.boot_gateway())
 
     async def on_unmount(self):
+        """Shutdown sequence."""
         await self.traffic.shutdown()
         if self.client:
             await self.client.close()
