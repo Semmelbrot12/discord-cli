@@ -6,13 +6,6 @@ NEXUS TUI - Enterprise Discord Client
 -------------------------------------
 Copyright (c) 2025 Nexus Development
 License: MIT
-
-Architecture Overview:
-    1. Core: Singleton State Management & Configuration
-    2. Network: Chromium TLS Fingerprinting & Connection Pooling
-    3. Gateway: Discord WebSocket Event Bus
-    4. UI: Textual DOM with Virtualized Rendering & Culling
-    5. Cache: LRU Asset Caching & Blob Storage
 """
 
 import asyncio
@@ -45,7 +38,6 @@ from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     Footer,
-    Header,
     Input,
     Label,
     ListItem,
@@ -53,14 +45,13 @@ from textual.widgets import (
     OptionList,
     Static,
     Switch,
-    Tree,
 )
 from textual.widgets.option_list import Option
 
 # --- SYSTEM CONSTANTS ---
 
 APP_NAME = "Nexus TUI"
-VERSION = "2.4.1-Enterprise-Hotfix"
+VERSION = "2.5.0-Stable"
 CONFIG_DIR = Path.home() / ".config" / "nexus-tui"
 LOG_FILE = CONFIG_DIR / "nexus.debug.log"
 CACHE_DIR = CONFIG_DIR / "cache"
@@ -404,7 +395,7 @@ class NexusApp(App):
     /* GRID */
     #col-servers { dock: left; width: 5; background: #1e1f22; scrollbar-size: 0 0; }
     #col-sidebar { width: 28; background: #2b2d31; height: 100%; border-right: solid #1e1f22; }
-    #col-chat { weight: 1; height: 100%; background: #313338; layout: vertical; }
+    #col-chat { width: 1fr; height: 100%; background: #313338; layout: vertical; }
     #col-members { dock: right; width: 22; background: #2b2d31; height: 100%; border-left: solid #1e1f22; }
     
     /* SERVER RAIL */
@@ -413,19 +404,17 @@ class NexusApp(App):
         background: #313338; 
         content-align: center middle; 
         margin: 1 0; 
-        border-radius: 50%;
-        transition: background 100ms;
     }
-    /* FIX: Use class selector instead of invalid pseudo-class */
-    ListItem.--highlight .server-bubble { background: #5865f2; color: white; border-radius: 30%; }
+    
+    /* Valid selector for highlighted state */
+    ListItem.--highlight .server-bubble { background: #5865f2; color: white; }
     
     /* SIDEBAR */
     #sidebar-header { height: 3; padding: 1; border-bottom: solid #1e1f22; text-style: bold; content-align: center middle; }
-    .category-label { color: #949ba4; text-style: bold; font-size: 90%; padding-left: 1; margin-top: 1; }
+    .category-label { color: #949ba4; text-style: bold; padding-left: 1; margin-top: 1; }
     .channel-label { color: #949ba4; padding-left: 2; }
     .channel-label.voice { color: #5e646e; }
     
-    /* FIX: Use class selector */
     ListItem.--highlight .channel-label { color: #f2f3f5; background: #3f4147; }
     
     /* CHAT AREA */
@@ -436,10 +425,10 @@ class NexusApp(App):
         text-style: bold; 
         background: #313338;
     }
-    #message-feed { weight: 1; }
+    #message-feed { height: 1fr; }
     
     /* INPUT */
-    #input-area { height: auto; margin: 1; background: #383a40; border-radius: 8px; }
+    #input-area { height: auto; margin: 1; background: #383a40; }
     #reply-status { height: 1; background: #2b2d31; color: #b9bbbe; padding: 0 1; display: none; }
     #reply-status.visible { display: block; }
     .reply-hint { text-align: right; color: #72767d; }
