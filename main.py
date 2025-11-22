@@ -51,7 +51,7 @@ from textual.widgets.option_list import Option
 # --- SYSTEM CONSTANTS ---
 
 APP_NAME = "Nexus TUI"
-VERSION = "2.6.3-Stable"
+VERSION = "2.7.0-WideGUI"
 CONFIG_DIR = Path.home() / ".config" / "nexus-tui"
 LOG_FILE = CONFIG_DIR / "nexus.debug.log"
 CACHE_DIR = CONFIG_DIR / "cache"
@@ -73,11 +73,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("NexusCore")
 
-
 # --- UTILITIES ---
 
 class LRUCache:
-    """Thread-safe Least Recently Used Cache for Assets."""
     def __init__(self, capacity: int = 1000):
         self.capacity = capacity
         self.cache = OrderedDict()
@@ -85,18 +83,15 @@ class LRUCache:
 
     async def get(self, key: str) -> Optional[Any]:
         async with self.lock:
-            if key not in self.cache:
-                return None
+            if key not in self.cache: return None
             self.cache.move_to_end(key)
             return self.cache[key]
 
     async def put(self, key: str, value: Any):
         async with self.lock:
-            if key in self.cache:
-                self.cache.move_to_end(key)
+            if key in self.cache: self.cache.move_to_end(key)
             self.cache[key] = value
-            if len(self.cache) > self.capacity:
-                self.cache.popitem(last=False)
+            if len(self.cache) > self.capacity: self.cache.popitem(last=False)
 
 @dataclass
 class AppConfig:
@@ -111,12 +106,9 @@ class AppConfig:
     @classmethod
     def load(cls) -> 'AppConfig':
         config_path = CONFIG_DIR / "config.json"
-        if not config_path.exists():
-            return cls()
+        if not config_path.exists(): return cls()
         try:
-            with open(config_path, 'r') as f:
-                data = json.load(f)
-            return cls(**data)
+            with open(config_path, 'r') as f: return cls(**json.load(f))
         except Exception as e:
             logger.error(f"Config load failed: {e}")
             return cls()
@@ -125,11 +117,9 @@ class AppConfig:
         with open(CONFIG_DIR / "config.json", 'w') as f:
             json.dump(self.__dict__, f, indent=4)
 
-
 # --- NETWORK LAYER (STEALTH) ---
 
 class TrafficController:
-    """Manages outgoing HTTP requests with browser-level impersonation."""
     def __init__(self, concurrency: int = 6):
         self.queue = asyncio.Queue()
         self.concurrency = concurrency
@@ -154,23 +144,16 @@ class TrafficController:
 
     async def shutdown(self):
         self.active = False
-        if self.session:
-            self.session.close()
-        for task in self.workers:
-            task.cancel()
+        if self.session: self.session.close()
+        for task in self.workers: task.cancel()
 
     async def ingest(self, message: discord.Message):
-        """Analyzes message for extractable assets."""
         targets = []
-        if message.author.avatar:
-            targets.append(str(message.author.avatar.url))
-        for att in message.attachments:
-            targets.append(str(att.url))
-        # Parse Custom Emojis
+        if message.author.avatar: targets.append(str(message.author.avatar.url))
+        for att in message.attachments: targets.append(str(att.url))
         emojis = re.findall(r'<a?:[a-zA-Z0-9_]+:([0-9]+)>', message.content)
         for eid in emojis:
             targets.append(f"https://cdn.discordapp.com/emojis/{eid}.webp?size=96&quality=lossless")
-        
         for url in targets:
             if await self.cache.get(url): continue
             await self.cache.put(url, True)
@@ -182,13 +165,10 @@ class TrafficController:
                 url = await self.queue.get()
                 async with self.semaphore:
                     await asyncio.sleep(random.uniform(0.05, 0.5))
-                    if self.session:
-                        await self.session.get(url)
+                    if self.session: await self.session.get(url)
                 self.queue.task_done()
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                pass
+            except asyncio.CancelledError: break
+            except Exception: pass
 
 # --- UI COMPONENTS ---
 
@@ -196,7 +176,9 @@ class ServerIcon(ListItem):
     def __init__(self, guild: discord.Guild):
         super().__init__()
         self.guild = guild
-        self.initials = "".join([w[0] for w in guild.name.split() if w])[:3]
+        # UPDATE: Allow more characters for wider view
+        clean_name = "".join([w[0] for w in guild.name.split() if w])
+        self.initials = clean_name[:6] if len(clean_name) > 0 else guild.name[:6]
 
     def compose(self) -> ComposeResult:
         yield Label(self.initials, classes="server-bubble")
@@ -224,7 +206,6 @@ class MemberItem(ListItem):
         self.color_hex = "#dbdee1"
         if member.color.value != 0:
             self.color_hex = f"#{member.color.value:06x}"
-            
         status_map = {"online": ("●", "green"), "idle": ("🌙", "yellow"), "dnd": ("⛔", "red"), "offline": ("○", "grey")}
         self.icon, self.status_color = status_map.get(str(member.status), ("○", "grey"))
 
@@ -250,12 +231,10 @@ class MessageRenderWidget(Static):
         if is_mentioned: self.add_class("mentioned")
 
     def compose(self) -> ComposeResult:
-        # Reply Header
         if self.msg.reference and self.msg.reference.resolved and isinstance(self.msg.reference.resolved, discord.Message):
             reply_author = self.msg.reference.resolved.author.display_name
             yield Label(f"  ┌─ Replying to {reply_author}", classes="reply-header")
 
-        # Header
         timestamp = self.msg.created_at.strftime("%H:%M")
         author_color = "white"
         if isinstance(self.msg.author, discord.Member) and self.msg.author.color.value != 0:
@@ -266,7 +245,6 @@ class MessageRenderWidget(Static):
         header_text.append(self.msg.author.display_name, style=f"bold {author_color}")
         yield Label(header_text, classes="msg-header")
 
-        # Content
         raw_content = self.msg.clean_content
         if "```" in raw_content:
             parts = raw_content.split("```")
@@ -283,7 +261,6 @@ class MessageRenderWidget(Static):
             if processed.strip():
                 yield Static(Markdown(processed), classes="markdown-body")
 
-        # Attachments/Embeds
         for att in self.msg.attachments:
             yield Label(f"📎 {att.filename} ({att.content_type})", classes="attachment-link")
         for embed in self.msg.embeds:
@@ -304,7 +281,7 @@ class ReplyStatus(Static):
 class CommandPalette(ModalScreen):
     CSS = """
     CommandPalette { align: center top; background: rgba(0,0,0,0.6); }
-    #palette-box { width: 60; height: 30; background: #1e1f22; border: tall #5865f2; margin-top: 2; }
+    #palette-box { width: 60; height: 30; background: #1e1f22; margin-top: 2; }
     #palette-input { border: none; background: #2b2d31; }
     #palette-options { background: #1e1f22; }
     """
@@ -341,7 +318,7 @@ class CommandPalette(ModalScreen):
 class SettingsScreen(ModalScreen):
     CSS = """
     SettingsScreen { align: center middle; background: rgba(0,0,0,0.8); }
-    #settings-window { width: 60; height: auto; background: #313338; border: tall #5865f2; padding: 2; }
+    #settings-window { width: 60; height: auto; background: #313338; padding: 2; }
     .setting-row { height: 3; align-vertical: middle; layout: horizontal; margin-bottom: 1; }
     .label { width: 1fr; content-align: left middle; }
     """
@@ -370,7 +347,6 @@ class SettingsScreen(ModalScreen):
 class DiscordGateway(discord.Client):
     def __init__(self, app_ref: 'NexusApp'):
         self.app = app_ref
-        # SMART INTENT HANDLING
         kwargs = {"chunk_guilds_at_startup": False, "status": discord.Status.online}
         if hasattr(discord, 'Intents'):
             intents = discord.Intents.default()
@@ -396,19 +372,21 @@ class NexusApp(App):
     Screen { layout: horizontal; background: #313338; color: #dbdee1; }
     
     /* GRID */
-    #col-servers { dock: left; width: 5; background: #1e1f22; scrollbar-size: 0 0; }
+    #col-servers { dock: left; width: 14; background: #1e1f22; scrollbar-size: 0 0; }
     #col-sidebar { width: 28; background: #2b2d31; height: 100%; border-right: solid #1e1f22; }
     #col-chat { width: 1fr; height: 100%; background: #313338; layout: vertical; }
     #col-members { dock: right; width: 22; background: #2b2d31; height: 100%; border-left: solid #1e1f22; }
     
-    /* SERVER RAIL */
+    /* SERVER RAIL - UPDATED FOR WIDTH */
     .server-bubble { 
-        width: 5; height: 3; 
+        width: 100%; 
+        height: 3; 
         background: #313338; 
         content-align: center middle; 
-        margin: 1 0; 
+        margin: 0;
+        border: solid #1e1f22; 
     }
-    /* FIXED CSS SELECTOR */
+    
     ListItem.--highlight .server-bubble { background: #5865f2; color: white; }
     
     /* SIDEBAR */
@@ -445,7 +423,6 @@ class NexusApp(App):
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit"),
         Binding("ctrl+k", "action_palette", "Jump to..."),
-        Binding("ctrl+s", "action_settings", "Settings"),
         Binding("ctrl+m", "action_members", "Toggle Members"),
         Binding("escape", "action_esc", "Back"),
         Binding("tab", "focus_next", "Next View"),
@@ -473,7 +450,6 @@ class NexusApp(App):
 
     async def boot_gateway(self):
         try:
-            # FIX: Removed unexpected argument for user token login
             await self.client.start(self.config.token)
         except Exception as e:
             self.notify(f"Login Failed: {e}", severity="error", timeout=20)
@@ -505,6 +481,8 @@ class NexusApp(App):
             self.search_index.append({"label": f"Server: {guild.name}", "id": f"g:{guild.id}"})
             for c in guild.text_channels:
                 self.search_index.append({"label": f"#{c.name} ({guild.name})", "id": f"c:{c.id}"})
+        
+        self.query_one("#welcome-msg", Label).update("Select a Server from the left.")
 
     def on_list_view_selected(self, event: ListView.Selected):
         item = event.item
