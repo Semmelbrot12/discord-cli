@@ -573,7 +573,7 @@ class NexusApp(App):
     NEXUS TUI Main Class.
     """
     
-    CSS = """
+CSS = """
     /* GLOBAL */
     Screen { layout: horizontal; background: #313338; color: #dbdee1; }
     
@@ -592,14 +592,17 @@ class NexusApp(App):
         border-radius: 50%;
         transition: background 100ms;
     }
-    ListItem--highlight .server-bubble { background: #5865f2; color: white; border-radius: 30%; }
+    /* FIX: Changed from ListItem--highlight to ListItem:highlighted */
+    ListItem:highlighted .server-bubble { background: #5865f2; color: white; border-radius: 30%; }
     
     /* SIDEBAR */
     #sidebar-header { height: 3; padding: 1; border-bottom: solid #1e1f22; text-style: bold; content-align: center middle; }
     .category-label { color: #949ba4; text-style: bold; font-size: 90%; padding-left: 1; margin-top: 1; }
     .channel-label { color: #949ba4; padding-left: 2; }
     .channel-label.voice { color: #5e646e; }
-    ListItem--highlight .channel-label { color: #f2f3f5; background: #3f4147; }
+    
+    /* FIX: Changed from ListItem--highlight to ListItem:highlighted */
+    ListItem:highlighted .channel-label { color: #f2f3f5; background: #3f4147; }
     
     /* CHAT AREA */
     #chat-topbar { 
