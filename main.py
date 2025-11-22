@@ -3,7 +3,7 @@
 
 """
 NEXUS TUI - Enterprise Discord Client
-Forged from https://github.com/fourjr/discord-cli
+Forked from https://github.com/fourjr/discord-cli
 -------------------------------------
 Version: 3.0.0-Persistent
 """
