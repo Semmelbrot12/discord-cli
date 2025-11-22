@@ -51,7 +51,7 @@ from textual.widgets.option_list import Option
 # --- SYSTEM CONSTANTS ---
 
 APP_NAME = "Nexus TUI"
-VERSION = "2.5.0-Stable"
+VERSION = "2.6.0-Stable"
 CONFIG_DIR = Path.home() / ".config" / "nexus-tui"
 LOG_FILE = CONFIG_DIR / "nexus.debug.log"
 CACHE_DIR = CONFIG_DIR / "cache"
@@ -405,9 +405,8 @@ class NexusApp(App):
         content-align: center middle; 
         margin: 1 0; 
     }
-    
-    /* Valid selector for highlighted state */
-    ListItem.--highlight .server-bubble { background: #5865f2; color: white; }
+    /* HIGHLIGHT FIX */
+    ListItem:highlighted .server-bubble { background: #5865f2; color: white; }
     
     /* SIDEBAR */
     #sidebar-header { height: 3; padding: 1; border-bottom: solid #1e1f22; text-style: bold; content-align: center middle; }
@@ -415,7 +414,7 @@ class NexusApp(App):
     .channel-label { color: #949ba4; padding-left: 2; }
     .channel-label.voice { color: #5e646e; }
     
-    ListItem.--highlight .channel-label { color: #f2f3f5; background: #3f4147; }
+    ListItem:highlighted .channel-label { color: #f2f3f5; background: #3f4147; }
     
     /* CHAT AREA */
     #chat-topbar { 
@@ -426,6 +425,7 @@ class NexusApp(App):
         background: #313338;
     }
     #message-feed { height: 1fr; }
+    #welcome-msg { text-align: center; width: 100%; padding-top: 10; color: #72767d; }
     
     /* INPUT */
     #input-area { height: auto; margin: 1; background: #383a40; }
@@ -434,9 +434,6 @@ class NexusApp(App):
     .reply-hint { text-align: right; color: #72767d; }
     Input { border: none; background: transparent; }
     Input:focus { border: none; }
-    
-    /* NOTIFICATIONS */
-    Toast { background: #5865f2; color: white; }
     """
 
     BINDINGS = [
@@ -483,7 +480,8 @@ class NexusApp(App):
         with Vertical(id="col-chat"):
             yield Label("# -", id="chat-topbar")
             with VerticalScroll(id="message-feed"):
-                yield Static("\nWelcome to Nexus.\nWaiting for Gateway...", style="dim italic center")
+                # ERROR FIX: Removed invalid style arg, added ID for CSS
+                yield Label("Welcome to Nexus.\nWaiting for Gateway...", id="welcome-msg")
             with Vertical(id="input-area"):
                 yield ReplyStatus(id="reply-status")
                 yield Input(placeholder="Message...", disabled=True)
