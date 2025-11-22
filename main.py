@@ -3,40 +3,41 @@
 
 """
 NEXUS TUI - Enterprise Discord Client
-Forged from https://github.com/fourjr/discord-cli - Thank you very much!
-This (hopefully) works in most CLI interfaces.
+Forged from https://github.com/fourjr/discord-cli
 -------------------------------------
-
-Version: 2.8.0-Interactive
+Version: 3.0.0-Persistent
 """
 
 import asyncio
-import datetime
 import json
 import logging
 import random
 import re
 import sys
+import shutil
+import tempfile
+import os
 from argparse import ArgumentParser
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 # --- Third-Party Dependencies ---
 import discord
 from curl_cffi.requests import AsyncSession
+import aiohttp # Used for direct image fetching for Chafa
 from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.text import Text
 from rich.panel import Panel
 
-from textual import work
+from textual import work, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical, VerticalScroll, Horizontal
 from textual.message import Message
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     Footer,
@@ -47,6 +48,9 @@ from textual.widgets import (
     OptionList,
     Static,
     Switch,
+    TabbedContent,
+    TabPane,
+    TextArea
 )
 from textual.widgets.option_list import Option
 
@@ -94,6 +98,33 @@ class LRUCache:
             self.cache[key] = value
             if len(self.cache) > self.capacity: self.cache.popitem(last=False)
 
+async def render_image_ansi(url: str, width: int = 60) -> str:
+    """Downloads an image and converts it to ANSI art using Chafa."""
+    if not shutil.which("chafa"):
+        return "[Image: 'chafa' not installed]"
+    
+    try:
+        # We use aiohttp here for quick fetching
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200: return "[Image Error]"
+                data = await resp.read()
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        
+        # -f symbols: use block characters, -c full: full color
+        proc = await asyncio.create_subprocess_exec(
+            "chafa", "-f", "symbols", "-c", "full", f"--size={width}x20", tmp_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        os.unlink(tmp_path)
+        return "\n" + stdout.decode("utf-8")
+    except Exception:
+        return "[Image Render Failed]"
+
 @dataclass
 class AppConfig:
     token: str = ""
@@ -102,6 +133,7 @@ class AppConfig:
     show_embeds: bool = True
     show_attachments: bool = True
     max_history: int = 100
+    auto_login: bool = False
 
     @classmethod
     def load(cls) -> 'AppConfig':
@@ -115,7 +147,7 @@ class AppConfig:
         with open(CONFIG_DIR / "config.json", 'w') as f:
             json.dump(self.__dict__, f, indent=4)
 
-# --- NETWORK LAYER ---
+# --- NETWORK LAYER (Original TrafficController) ---
 
 class TrafficController:
     def __init__(self, concurrency: int = 6):
@@ -145,6 +177,7 @@ class TrafficController:
         for task in self.workers: task.cancel()
 
     async def ingest(self, message: discord.Message):
+        """Pre-fetches content to warm up cache."""
         targets = []
         if message.author.avatar: targets.append(str(message.author.avatar.url))
         for att in message.attachments: targets.append(str(att.url))
@@ -178,6 +211,23 @@ class ServerIcon(ListItem):
 
     def compose(self) -> ComposeResult:
         yield Label(self.initials, classes="server-bubble")
+
+class DMItem(ListItem):
+    """Sidebar item for Direct Messages."""
+    def __init__(self, channel: Any):
+        super().__init__()
+        self.channel = channel
+        self.is_group = isinstance(channel, discord.GroupChannel)
+        
+        if self.is_group:
+            self.label = channel.name or "Group Chat"
+            self.icon = "👥"
+        else:
+            self.label = channel.recipient.display_name
+            self.icon = "👤"
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"{self.icon} {self.label}", classes="channel-label")
 
 class ChannelNode(ListItem):
     def __init__(self, channel: Any, is_category: bool = False):
@@ -213,6 +263,7 @@ class MemberItem(ListItem):
         yield Label(text)
 
 class MessageRenderWidget(Static):
+    """Renders a single message, including text, code blocks, embeds, and images."""
     class Selected(Message):
         def __init__(self, msg_obj: discord.Message):
             self.msg_obj = msg_obj
@@ -225,10 +276,11 @@ class MessageRenderWidget(Static):
         self.add_class("message-container")
         if is_mentioned: self.add_class("mentioned")
 
-    def compose(self) -> ComposeResult:
+    async def on_mount(self):
+        # Header
         if self.msg.reference and self.msg.reference.resolved and isinstance(self.msg.reference.resolved, discord.Message):
             reply_author = self.msg.reference.resolved.author.display_name
-            yield Label(f"  ┌─ Replying to {reply_author}", classes="reply-header")
+            self.mount(Label(f"  ┌─ Replying to {reply_author}", classes="reply-header"))
 
         timestamp = self.msg.created_at.strftime("%H:%M")
         author_color = "white"
@@ -238,8 +290,9 @@ class MessageRenderWidget(Static):
         header_text = Text()
         header_text.append(f"{timestamp} ", style="dim")
         header_text.append(self.msg.author.display_name, style=f"bold {author_color}")
-        yield Label(header_text, classes="msg-header")
+        self.mount(Label(header_text, classes="msg-header"))
 
+        # Content
         raw_content = self.msg.clean_content
         if "```" in raw_content:
             parts = raw_content.split("```")
@@ -248,20 +301,28 @@ class MessageRenderWidget(Static):
                     lines = part.split('\n')
                     lang = lines[0].strip() if lines[0].strip() else "text"
                     code = "\n".join(lines[1:]) if len(lines) > 1 else part
-                    yield Static(Syntax(code, lang, theme="monokai", line_numbers=False, word_wrap=True), classes="code-block")
+                    self.mount(Static(Syntax(code, lang, theme="monokai", line_numbers=False, word_wrap=True), classes="code-block"))
                 elif part.strip():
-                    yield Label(part)
+                    self.mount(Label(part))
         else:
             processed = re.sub(r'<a?:([a-zA-Z0-9_]+):[0-9]+>', r':\1:', raw_content)
             if processed.strip():
-                yield Static(Markdown(processed), classes="markdown-body")
+                self.mount(Static(Markdown(processed), classes="markdown-body"))
 
+        # Attachments / Images
         for att in self.msg.attachments:
-            yield Label(f"📎 {att.filename} ({att.content_type})", classes="attachment-link")
+            if att.content_type and att.content_type.startswith("image/"):
+                # Async render image
+                ansi = await render_image_ansi(att.url)
+                self.mount(Label(Text.from_ansi(ansi)))
+            else:
+                self.mount(Label(f"📎 {att.filename} ({att.content_type})", classes="attachment-link"))
+
+        # Embeds
         for embed in self.msg.embeds:
             if embed.title or embed.description:
                 panel = Panel(Text(embed.description or "", style="white"), title=f"[bold]{embed.title or ''}[/]", border_style="blue", padding=(0, 1))
-                yield Static(panel, classes="embed-panel")
+                self.mount(Static(panel, classes="embed-panel"))
 
     def on_click(self):
         self.post_message(self.Selected(self.msg))
@@ -273,9 +334,7 @@ class TopActionBar(Static):
     def compose(self) -> ComposeResult:
         with Horizontal():
             yield Label("# -", id="chat-title")
-            # Spacer
             yield Label(" ", classes="spacer")
-            # Action Buttons
             yield Button("🔍 Search", id="btn-search", classes="icon-btn")
             yield Button("👥 Members", id="btn-members", classes="icon-btn")
 
@@ -294,6 +353,78 @@ class ReplyStatus(Static):
         yield Label("ESC to Cancel", classes="reply-hint")
 
 # --- SCREENS ---
+
+class LoginScreen(Screen):
+    CSS = """
+    LoginScreen { align: center middle; background: #2b2d31; }
+    #login-box { width: 60; height: auto; background: #313338; border: solid #5865f2; padding: 2; }
+    Input { margin-bottom: 1; }
+    Button { width: 100%; margin-top: 1; }
+    """
+    def compose(self) -> ComposeResult:
+        with Vertical(id="login-box"):
+            yield Label("[bold]Nexus TUI Login[/]", style="text-align: center")
+            yield Label("Enter User Token:", classes="label")
+            yield Input(placeholder="Token...", password=True, id="token-input")
+            yield Horizontal(Label("Remember me?  "), Switch(value=True, id="save-switch"))
+            yield Button("Login", variant="primary", id="btn-login")
+
+    @on(Button.Pressed, "#btn-login")
+    def action_login(self):
+        token = self.query_one("#token-input").value
+        save = self.query_one("#save-switch").value
+        if len(token) > 10:
+            self.dismiss((token, save))
+
+class MessageActionModal(ModalScreen):
+    """Context Menu for Messages (Edit/Delete)."""
+    CSS = """
+    MessageActionModal { align: center middle; background: rgba(0,0,0,0.7); }
+    #action-list { width: 40; height: auto; background: #1e1f22; border: white; }
+    """
+    def __init__(self, is_author: bool):
+        super().__init__()
+        self.is_author = is_author
+
+    def compose(self) -> ComposeResult:
+        options = [Option("Reply", id="reply"), Option("Copy ID", id="copy")]
+        if self.is_author:
+            options.append(Option("Edit", id="edit"))
+            options.append(Option("Delete", id="delete"))
+        
+        with Vertical(id="action-list"):
+            yield Label("Message Actions", style="bold center")
+            yield OptionList(*options, id="opt-list")
+
+    @on(OptionList.OptionSelected)
+    def on_select(self, event: OptionList.OptionSelected):
+        self.dismiss(event.option.id)
+
+class EditInputModal(ModalScreen):
+    """Modal for editing messages."""
+    CSS = """
+    EditInputModal { align: center middle; background: rgba(0,0,0,0.8); }
+    #edit-box { width: 80%; height: 60%; background: #313338; border: blue; }
+    TextArea { height: 1fr; background: #1e1f22; }
+    """
+    def __init__(self, original_text: str):
+        super().__init__()
+        self.original_text = original_text
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="edit-box"):
+            yield Label("Edit Message", style="bold")
+            yield TextArea(self.original_text, id="modal-text")
+            with Horizontal():
+                yield Button("Cancel", id="cancel")
+                yield Button("Save", variant="primary", id="save")
+
+    @on(Button.Pressed)
+    def on_btn(self, event: Button.Pressed):
+        if event.button.id == "save":
+            self.dismiss(self.query_one(TextArea).text)
+        else:
+            self.dismiss(None)
 
 class CommandPalette(ModalScreen):
     CSS = """
@@ -365,6 +496,8 @@ class DiscordGateway(discord.Client):
     def __init__(self, app_ref: 'NexusApp'):
         self.app = app_ref
         kwargs = {"chunk_guilds_at_startup": False, "status": discord.Status.online}
+        # Discord.py-self usually doesn't need intents manually set like standard d.py
+        # but we keep it for compatibility with the original script structure
         if hasattr(discord, 'Intents'):
             intents = discord.Intents.default()
             try:
@@ -389,10 +522,13 @@ class NexusApp(App):
     Screen { layout: horizontal; background: #313338; color: #dbdee1; }
     
     /* LAYOUT GRID */
-    #col-servers { dock: left; width: 14; background: #1e1f22; scrollbar-size: 0 0; }
-    #col-sidebar { width: 28; background: #2b2d31; height: 100%; border-right: solid #1e1f22; }
+    #col-sidebar { width: 32; background: #2b2d31; height: 100%; border-right: solid #1e1f22; }
     #col-chat { width: 1fr; height: 100%; background: #313338; layout: vertical; }
     #col-members { dock: right; width: 22; background: #2b2d31; height: 100%; border-left: solid #1e1f22; }
+    
+    /* SERVER/DM TABS */
+    TabbedContent { height: 1fr; }
+    TabPane { padding: 0; }
     
     /* SERVER RAIL */
     .server-bubble { 
@@ -405,7 +541,7 @@ class NexusApp(App):
     
     /* SIDEBAR */
     #sidebar-header { height: 3; padding: 1; border-bottom: solid #1e1f22; text-style: bold; content-align: center middle; }
-    #channel-list { height: 1fr; }
+    #channel-list, #dm-list, #server-list { height: 1fr; }
     
     /* USER CONTROL PANEL (Bottom Left) */
     UserControlPanel { 
@@ -444,13 +580,13 @@ class NexusApp(App):
     #message-feed { height: 1fr; }
     #welcome-msg { text-align: center; width: 100%; padding-top: 2; color: #72767d; }
     
-    /* INPUT AREA */
-    #input-area { height: auto; margin: 1; background: #383a40; }
+    /* INPUT AREA - UPDATED FOR MULTILINE */
+    #input-area { height: auto; margin: 1; background: #383a40; padding: 1; }
     #reply-status { height: 1; background: #2b2d31; color: #b9bbbe; padding: 0 1; display: none; }
     #reply-status.visible { display: block; }
     .reply-hint { text-align: right; color: #72767d; }
-    Input { border: none; background: transparent; }
-    Input:focus { border: none; }
+    TextArea { height: 4; background: #2b2d31; border: none; }
+    #btn-send { width: 100%; margin-top: 1; background: #5865f2; color: white; }
     
     /* MISC */
     Toast { background: #5865f2; color: white; }
@@ -470,12 +606,24 @@ class NexusApp(App):
         self.client = DiscordGateway(self)
         self.traffic = TrafficController(concurrency=5)
         self.active_guild: Optional[discord.Guild] = None
-        self.active_channel: Optional[discord.TextChannel] = None
+        self.active_channel: Optional[Any] = None
         self.reply_msg: Optional[discord.Message] = None
         self.typing_task: Optional[asyncio.Task] = None
         self.search_index: List[Dict] = []
 
     async def on_mount(self):
+        # 1. Check Login
+        if not self.config.token:
+            res = await self.push_screen_wait(LoginScreen())
+            if not res:
+                self.exit()
+                return
+            token, save = res
+            self.config.token = token
+            self.config.auto_login = save
+            if save: self.config.save()
+        
+        # 2. Start Services
         await self.traffic.startup()
         asyncio.create_task(self.boot_gateway())
 
@@ -486,32 +634,42 @@ class NexusApp(App):
 
     async def boot_gateway(self):
         try:
-            # FIX: Removed unexpected argument for user token login
             await self.client.start(self.config.token)
         except Exception as e:
             self.notify(f"Login Failed: {e}", severity="error", timeout=20)
+            self.config.token = "" # Clear invalid token
+            self.config.save()
 
     def compose(self) -> ComposeResult:
-        # LEFT: Servers
-        with Container(id="col-servers"):
-            yield ListView(id="server-list")
-
-        # MIDDLE: Sidebar
+        # LEFT: Sidebar (Servers + DMs + Channels)
         with Vertical(id="col-sidebar"):
             yield Label("Nexus TUI", id="sidebar-header")
-            yield ListView(id="channel-list")
-            # NEW: User Control Panel at bottom
+            with TabbedContent(initial="tab-servers"):
+                # Tab 1: Servers & Channels
+                with TabPane("Servers", id="tab-servers"):
+                    with Horizontal(style="height: 1fr;"):
+                         # Thin rail for servers
+                        yield ListView(id="server-list", style="width: 8; margin-right: 1;") 
+                        # List for channels
+                        yield ListView(id="channel-list", style="width: 1fr;")
+                # Tab 2: DMs
+                with TabPane("DMs", id="tab-dms"):
+                    yield ListView(id="dm-list")
+            
+            # User Control Panel at bottom of sidebar
             yield UserControlPanel()
 
         # CENTER: Chat
         with Vertical(id="col-chat"):
-            # NEW: Interactive Top Bar
+            # Interactive Top Bar
             yield TopActionBar()
             with VerticalScroll(id="message-feed"):
                 yield Label("Welcome to Nexus.\nWaiting for Gateway...", id="welcome-msg")
+            # Multi-line Input Area
             with Vertical(id="input-area"):
                 yield ReplyStatus(id="reply-status")
-                yield Input(placeholder="Message...", disabled=True)
+                yield TextArea(id="main-input")
+                yield Button("Send", id="btn-send")
 
         # RIGHT: Members
         with VerticalScroll(id="col-members"):
@@ -520,6 +678,8 @@ class NexusApp(App):
 
     def on_gateway_ready(self):
         self.notify("Gateway Connected", title="System")
+        
+        # Populate Servers
         sl = self.query_one("#server-list", ListView)
         sl.clear()
         self.search_index = []
@@ -529,17 +689,28 @@ class NexusApp(App):
             for c in guild.text_channels:
                 self.search_index.append({"label": f"#{c.name} ({guild.name})", "id": f"c:{c.id}"})
         
-        self.query_one("#welcome-msg", Label).update("Select a Server from the left.")
+        # Populate DMs
+        self.refresh_dms()
+        
+        self.query_one("#welcome-msg", Label).update("Select a Server or DM.")
         
         # Update User Control Panel
         uc = self.query_one(UserControlPanel)
         uc.query_one("#uc-username", Label).update(self.client.user.name)
         uc.query_one("#uc-status", Label).update(f"#{self.client.user.discriminator}")
 
+    def refresh_dms(self):
+        dl = self.query_one("#dm-list", ListView)
+        dl.clear()
+        for pm in self.client.private_channels:
+            dl.append(DMItem(pm))
+            name = pm.name if isinstance(pm, discord.GroupChannel) else pm.recipient.name
+            self.search_index.append({"label": f"DM: {name}", "id": f"d:{pm.id}"})
+
     # --- EVENT HANDLERS (BUTTONS) ---
     
-    def on_button_pressed(self, event: Button.Pressed):
-        """Handle all on-screen button clicks."""
+    @on(Button.Pressed)
+    async def on_button_pressed(self, event: Button.Pressed):
         bid = event.button.id
         if bid == "btn-settings":
             self.action_settings()
@@ -547,6 +718,8 @@ class NexusApp(App):
             self.action_palette()
         elif bid == "btn-members":
             self.action_toggle_members()
+        elif bid == "btn-send":
+            await self.action_submit_message()
 
     def on_list_view_selected(self, event: ListView.Selected):
         item = event.item
@@ -555,9 +728,35 @@ class NexusApp(App):
         elif isinstance(item, ChannelNode):
             if not item.is_category:
                 self.load_channel(item.channel_ref)
+        elif isinstance(item, DMItem):
+            self.load_channel(item.channel)
 
     def on_message_render_widget_selected(self, event: MessageRenderWidget.Selected):
-        self.initiate_reply(event.msg_obj)
+        # NEW: Show Context Menu instead of immediate reply
+        self.show_message_context_menu(event.msg_obj)
+
+    def show_message_context_menu(self, message: discord.Message):
+        is_author = (message.author.id == self.client.user.id)
+        
+        def handler(action_id):
+            if action_id == "reply":
+                self.initiate_reply(message)
+            elif action_id == "delete":
+                asyncio.create_task(message.delete())
+                self.notify("Message deleted.")
+            elif action_id == "edit":
+                self.initiate_edit(message)
+            elif action_id == "copy":
+                self.notify(f"ID: {message.id}")
+                
+        self.push_screen(MessageActionModal(is_author), handler)
+
+    def initiate_edit(self, message: discord.Message):
+        def edit_handler(new_content):
+            if new_content and new_content != message.content:
+                asyncio.create_task(message.edit(content=new_content))
+                self.notify("Message edited.")
+        self.push_screen(EditInputModal(message.content), edit_handler)
 
     def action_esc(self):
         if self.reply_msg:
@@ -578,6 +777,9 @@ class NexusApp(App):
                 if channel:
                     self.load_guild(channel.guild)
                     self.load_channel(channel)
+            elif type_ == "d":
+                channel = self.client.get_channel(id_)
+                if channel: self.load_channel(channel)
         self.push_screen(CommandPalette(self.search_index), handle_palette)
 
     def action_settings(self):
@@ -592,6 +794,10 @@ class NexusApp(App):
         self.query_one("#sidebar-header", Label).update(guild.name)
         cl = self.query_one("#channel-list", ListView)
         cl.clear()
+        
+        # Ensure we are on the server tab
+        self.query_one(TabbedContent).active = "tab-servers"
+
         by_category = {}
         no_category = []
         for channel in guild.channels:
@@ -611,18 +817,19 @@ class NexusApp(App):
             for c in sorted(by_category[cat.id]["channels"], key=lambda x: x.position):
                 if isinstance(c, (discord.TextChannel, discord.VoiceChannel)):
                     cl.append(ChannelNode(c))
-        self.populate_members(guild)
+        self.populate_members(guild.members)
         cl.focus()
 
     @work
-    async def populate_members(self, guild: discord.Guild):
+    async def populate_members(self, members: List[discord.Member]):
         ml = self.query_one("#member-list", ListView)
         ml.clear()
         def sort_key(m):
             return {"online": 0, "streaming": 1, "idle": 2, "dnd": 3, "offline": 4}.get(str(m.status), 5)
-        members = sorted(guild.members, key=sort_key)
+        
+        m_list = sorted(members, key=sort_key)
         count = 0
-        for m in members:
+        for m in m_list:
             if str(m.status) == "offline": continue
             ml.append(MemberItem(m))
             count += 1
@@ -630,19 +837,29 @@ class NexusApp(App):
 
     @work
     async def load_channel(self, channel: Any):
-        if not isinstance(channel, discord.TextChannel):
-            self.notify("Voice channels not supported yet.", severity="warning")
-            return
+        # Handle DM vs Guild Channel
         self.active_channel = channel
         self.cancel_reply()
         
-        # NEW: Update the Top Bar Label instead of the old Label widget
-        self.query_one("#chat-title", Label).update(f"#{channel.name} | {channel.topic or ''}")
+        name = ""
+        if isinstance(channel, discord.DMChannel):
+            name = f"@{channel.recipient.name}"
+            # Populate members with just the two people
+            self.populate_members([channel.recipient, self.client.user])
+        elif isinstance(channel, discord.GroupChannel):
+            name = channel.name or "Group Chat"
+            self.populate_members(channel.recipients + [self.client.user])
+        else:
+            name = f"#{channel.name}"
+
+        # Update Top Bar
+        self.query_one("#chat-title", Label).update(name)
         
-        inp = self.query_one(Input)
-        inp.disabled = False
-        inp.placeholder = f"Message #{channel.name}"
-        inp.focus()
+        # Unlock Input
+        # inp = self.query_one("#main-input") # Now it's a TextArea
+        # inp.focus() 
+
+        # Load History
         feed = self.query_one("#message-feed", VerticalScroll)
         await feed.remove_children()
         try:
@@ -660,8 +877,10 @@ class NexusApp(App):
 
     async def render_message(self, message: discord.Message, scroll: bool):
         feed = self.query_one("#message-feed", VerticalScroll)
+        # Trim history if needed
         if len(feed.children) > self.config.max_history + 20:
             await feed.children[0].remove()
+        
         is_mentioned = self.client.user in message.mentions
         widget = MessageRenderWidget(message, is_mentioned, self.client.user.id)
         await feed.mount(widget)
@@ -673,27 +892,18 @@ class NexusApp(App):
         status = self.query_one("#reply-status")
         status.query_one("#reply-target-text", Label).update(f"Replying to: {message.author.display_name}")
         status.add_class("visible")
-        self.query_one(Input).focus()
+        self.query_one("#main-input").focus()
 
     def cancel_reply(self):
         self.reply_msg = None
         self.query_one("#reply-status").remove_class("visible")
 
-    async def on_input_changed(self, event: Input.Changed):
-        if not self.active_channel or not event.value: return
-        if not self.typing_task or self.typing_task.done():
-            self.typing_task = asyncio.create_task(self._trigger_typing())
-
-    async def _trigger_typing(self):
-        try:
-            async with self.active_channel.typing():
-                await asyncio.sleep(8)
-        except: pass
-
-    async def on_input_submitted(self, event: Input.Submitted):
-        val = event.value.strip()
+    async def action_submit_message(self):
+        ta = self.query_one("#main-input", TextArea)
+        val = ta.text.strip()
         if not val or not self.active_channel: return
-        event.input.value = ""
+        
+        ta.text = "" # Clear input
         try:
             if self.reply_msg:
                 await self.reply_msg.reply(val)
@@ -705,14 +915,14 @@ class NexusApp(App):
 
 def main():
     parser = ArgumentParser(description="Nexus TUI - Enterprise Discord Client")
+    # Kept argument for backwards compatibility
     parser.add_argument("-t", "--token", help="Auth Token", default=None)
     args = parser.parse_args()
+    
     cfg = AppConfig.load()
     if args.token:
         cfg.token = args.token
-    if not cfg.token:
-        print("Error: No token provided. Use -t")
-        sys.exit(1)
+    
     app = NexusApp(cfg)
     app.run()
 
