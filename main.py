@@ -3,9 +3,11 @@
 
 """
 NEXUS TUI - Enterprise Discord Client
+Forged from https://github.com/fourjr/discord-cli - Thank you very much!
+This (hopefully) works in most CLI interfaces.
 -------------------------------------
-Copyright (c) 2025 Nexus Development
-License: MIT
+
+Version: 2.8.0-Interactive
 """
 
 import asyncio
@@ -51,7 +53,6 @@ from textual.widgets.option_list import Option
 # --- SYSTEM CONSTANTS ---
 
 APP_NAME = "Nexus TUI"
-VERSION = "2.7.0-WideGUI"
 CONFIG_DIR = Path.home() / ".config" / "nexus-tui"
 LOG_FILE = CONFIG_DIR / "nexus.debug.log"
 CACHE_DIR = CONFIG_DIR / "cache"
@@ -61,7 +62,7 @@ USER_AGENT = (
     "discord/1.0.9015 Chrome/108.0.5359.215 Electron/22.3.14 Safari/537.36"
 )
 
-# --- LOGGING INFRASTRUCTURE ---
+# --- LOGGING ---
 
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -100,7 +101,6 @@ class AppConfig:
     streamer_mode: bool = False
     show_embeds: bool = True
     show_attachments: bool = True
-    syntax_highlighting: bool = True
     max_history: int = 100
 
     @classmethod
@@ -109,15 +109,13 @@ class AppConfig:
         if not config_path.exists(): return cls()
         try:
             with open(config_path, 'r') as f: return cls(**json.load(f))
-        except Exception as e:
-            logger.error(f"Config load failed: {e}")
-            return cls()
+        except Exception: return cls()
 
     def save(self):
         with open(CONFIG_DIR / "config.json", 'w') as f:
             json.dump(self.__dict__, f, indent=4)
 
-# --- NETWORK LAYER (STEALTH) ---
+# --- NETWORK LAYER ---
 
 class TrafficController:
     def __init__(self, concurrency: int = 6):
@@ -136,7 +134,6 @@ class TrafficController:
             headers={
                 "User-Agent": USER_AGENT,
                 "Accept": "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
                 "Referer": "https://discord.com/"
             }
         )
@@ -176,7 +173,6 @@ class ServerIcon(ListItem):
     def __init__(self, guild: discord.Guild):
         super().__init__()
         self.guild = guild
-        # UPDATE: Allow more characters for wider view
         clean_name = "".join([w[0] for w in guild.name.split() if w])
         self.initials = clean_name[:6] if len(clean_name) > 0 else guild.name[:6]
 
@@ -226,7 +222,6 @@ class MessageRenderWidget(Static):
         super().__init__()
         self.msg = message
         self.is_mentioned = is_mentioned
-        self.client_user_id = client_user_id
         self.add_class("message-container")
         if is_mentioned: self.add_class("mentioned")
 
@@ -270,6 +265,28 @@ class MessageRenderWidget(Static):
 
     def on_click(self):
         self.post_message(self.Selected(self.msg))
+
+# --- INTERACTIVE BARS ---
+
+class TopActionBar(Static):
+    """Top bar for chat area with Title and Action Buttons."""
+    def compose(self) -> ComposeResult:
+        with Horizontal():
+            yield Label("# -", id="chat-title")
+            # Spacer
+            yield Label(" ", classes="spacer")
+            # Action Buttons
+            yield Button("🔍 Search", id="btn-search", classes="icon-btn")
+            yield Button("👥 Members", id="btn-members", classes="icon-btn")
+
+class UserControlPanel(Static):
+    """Bottom left panel for User Info and Settings."""
+    def compose(self) -> ComposeResult:
+        with Horizontal():
+            with Vertical(id="user-info-text"):
+                yield Label("Connecting...", id="uc-username")
+                yield Label("Online", id="uc-status")
+            yield Button("⚙️", id="btn-settings", classes="settings-btn")
 
 class ReplyStatus(Static):
     def compose(self) -> ComposeResult:
@@ -371,44 +388,63 @@ class NexusApp(App):
     /* GLOBAL */
     Screen { layout: horizontal; background: #313338; color: #dbdee1; }
     
-    /* GRID */
+    /* LAYOUT GRID */
     #col-servers { dock: left; width: 14; background: #1e1f22; scrollbar-size: 0 0; }
     #col-sidebar { width: 28; background: #2b2d31; height: 100%; border-right: solid #1e1f22; }
     #col-chat { width: 1fr; height: 100%; background: #313338; layout: vertical; }
     #col-members { dock: right; width: 22; background: #2b2d31; height: 100%; border-left: solid #1e1f22; }
     
-    /* SERVER RAIL - UPDATED FOR WIDTH */
+    /* SERVER RAIL */
     .server-bubble { 
-        width: 100%; 
-        height: 3; 
+        width: 100%; height: 3; 
         background: #313338; 
         content-align: center middle; 
-        margin: 0;
-        border: solid #1e1f22; 
+        margin: 0; border: solid #1e1f22;
     }
-    
     ListItem.--highlight .server-bubble { background: #5865f2; color: white; }
     
     /* SIDEBAR */
     #sidebar-header { height: 3; padding: 1; border-bottom: solid #1e1f22; text-style: bold; content-align: center middle; }
+    #channel-list { height: 1fr; }
+    
+    /* USER CONTROL PANEL (Bottom Left) */
+    UserControlPanel { 
+        height: 4; background: #232428; 
+        border-top: solid #1e1f22; 
+        padding: 0 1; 
+    }
+    #user-info-text { width: 1fr; content-align: left middle; }
+    #uc-username { text-style: bold; }
+    #uc-status { color: #949ba4; }
+    .settings-btn { 
+        min-width: 4; width: 4; background: transparent; border: none; 
+    }
+    .settings-btn:hover { background: #3f4147; }
+
+    /* CHANNELS */
     .category-label { color: #949ba4; text-style: bold; padding-left: 1; margin-top: 1; }
     .channel-label { color: #949ba4; padding-left: 2; }
     .channel-label.voice { color: #5e646e; }
-    
     ListItem.--highlight .channel-label { color: #f2f3f5; background: #3f4147; }
     
-    /* CHAT AREA */
-    #chat-topbar { 
-        height: 3; padding: 0 2; 
+    /* CHAT AREA - HEADER */
+    TopActionBar { 
+        height: 3; padding: 0 1; 
         border-bottom: solid #26272d; 
-        content-align: left middle; 
-        text-style: bold; 
-        background: #313338;
+        background: #313338; 
     }
+    #chat-title { content-align: left middle; text-style: bold; height: 100%; }
+    .spacer { width: 1fr; }
+    .icon-btn { 
+        background: transparent; border: none; color: #b5bac1; 
+        min-width: 8; height: 100%; 
+    }
+    .icon-btn:hover { color: white; background: #3f4147; }
+
     #message-feed { height: 1fr; }
     #welcome-msg { text-align: center; width: 100%; padding-top: 2; color: #72767d; }
     
-    /* INPUT */
+    /* INPUT AREA */
     #input-area { height: auto; margin: 1; background: #383a40; }
     #reply-status { height: 1; background: #2b2d31; color: #b9bbbe; padding: 0 1; display: none; }
     #reply-status.visible { display: block; }
@@ -416,16 +452,16 @@ class NexusApp(App):
     Input { border: none; background: transparent; }
     Input:focus { border: none; }
     
-    /* NOTIFICATIONS */
+    /* MISC */
     Toast { background: #5865f2; color: white; }
     """
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit"),
-        Binding("ctrl+k", "action_palette", "Jump to..."),
-        Binding("ctrl+m", "action_members", "Toggle Members"),
+        Binding("ctrl+k", "action_palette", "Jump"),
+        Binding("ctrl+m", "action_toggle_members", "Members"),
         Binding("escape", "action_esc", "Back"),
-        Binding("tab", "focus_next", "Next View"),
+        Binding("tab", "focus_next", "Next"),
     ]
 
     def __init__(self, config: AppConfig):
@@ -450,23 +486,34 @@ class NexusApp(App):
 
     async def boot_gateway(self):
         try:
+            # FIX: Removed unexpected argument for user token login
             await self.client.start(self.config.token)
         except Exception as e:
             self.notify(f"Login Failed: {e}", severity="error", timeout=20)
 
     def compose(self) -> ComposeResult:
+        # LEFT: Servers
         with Container(id="col-servers"):
             yield ListView(id="server-list")
+
+        # MIDDLE: Sidebar
         with Vertical(id="col-sidebar"):
             yield Label("Nexus TUI", id="sidebar-header")
             yield ListView(id="channel-list")
+            # NEW: User Control Panel at bottom
+            yield UserControlPanel()
+
+        # CENTER: Chat
         with Vertical(id="col-chat"):
-            yield Label("# -", id="chat-topbar")
+            # NEW: Interactive Top Bar
+            yield TopActionBar()
             with VerticalScroll(id="message-feed"):
                 yield Label("Welcome to Nexus.\nWaiting for Gateway...", id="welcome-msg")
             with Vertical(id="input-area"):
                 yield ReplyStatus(id="reply-status")
                 yield Input(placeholder="Message...", disabled=True)
+
+        # RIGHT: Members
         with VerticalScroll(id="col-members"):
             yield ListView(id="member-list")
         yield Footer()
@@ -483,6 +530,23 @@ class NexusApp(App):
                 self.search_index.append({"label": f"#{c.name} ({guild.name})", "id": f"c:{c.id}"})
         
         self.query_one("#welcome-msg", Label).update("Select a Server from the left.")
+        
+        # Update User Control Panel
+        uc = self.query_one(UserControlPanel)
+        uc.query_one("#uc-username", Label).update(self.client.user.name)
+        uc.query_one("#uc-status", Label).update(f"#{self.client.user.discriminator}")
+
+    # --- EVENT HANDLERS (BUTTONS) ---
+    
+    def on_button_pressed(self, event: Button.Pressed):
+        """Handle all on-screen button clicks."""
+        bid = event.button.id
+        if bid == "btn-settings":
+            self.action_settings()
+        elif bid == "btn-search":
+            self.action_palette()
+        elif bid == "btn-members":
+            self.action_toggle_members()
 
     def on_list_view_selected(self, event: ListView.Selected):
         item = event.item
@@ -519,7 +583,7 @@ class NexusApp(App):
     def action_settings(self):
         self.push_screen(SettingsScreen(self.config))
 
-    def action_members(self):
+    def action_toggle_members(self):
         mem = self.query_one("#col-members")
         mem.display = not mem.display
 
@@ -571,7 +635,10 @@ class NexusApp(App):
             return
         self.active_channel = channel
         self.cancel_reply()
-        self.query_one("#chat-topbar", Label).update(f"#{channel.name} | {channel.topic or ''}")
+        
+        # NEW: Update the Top Bar Label instead of the old Label widget
+        self.query_one("#chat-title", Label).update(f"#{channel.name} | {channel.topic or ''}")
+        
         inp = self.query_one(Input)
         inp.disabled = False
         inp.placeholder = f"Message #{channel.name}"
