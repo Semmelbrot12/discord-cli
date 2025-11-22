@@ -5,7 +5,7 @@
 NEXUS TUI - Enterprise Discord Client
 Forged from https://github.com/fourjr/discord-cli
 -------------------------------------
-Version: 3.0.0-Persistence
+Version: 3.0.2-Persistence
 """
 
 import asyncio
@@ -21,7 +21,7 @@ from argparse import ArgumentParser
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # --- Third-Party Dependencies ---
 import discord
@@ -171,7 +171,9 @@ class TrafficController:
 
     async def shutdown(self):
         self.active = False
-        if self.session: self.session.close()
+        # FIX: session.close() is a coroutine and must be awaited
+        if self.session: 
+            await self.session.close()
         for task in self.workers: task.cancel()
 
     async def ingest(self, message: discord.Message):
@@ -242,14 +244,19 @@ class ChannelNode(ListItem):
             yield Label(f"{icon} {self.channel_name}", classes=classes)
 
 class MemberItem(ListItem):
-    def __init__(self, member: discord.Member):
+    def __init__(self, member: Union[discord.Member, discord.User, discord.ClientUser]):
         super().__init__()
         self.member = member
+        
+        # Safe handling for User objects (DMs)
         self.color_hex = "#dbdee1"
-        if member.color.value != 0:
+        if hasattr(member, "color") and member.color.value != 0:
             self.color_hex = f"#{member.color.value:06x}"
+            
+        # Safe handling for Status
+        status = getattr(member, "status", "offline")
         status_map = {"online": ("●", "green"), "idle": ("🌙", "yellow"), "dnd": ("⛔", "red"), "offline": ("○", "grey")}
-        self.icon, self.status_color = status_map.get(str(member.status), ("○", "grey"))
+        self.icon, self.status_color = status_map.get(str(status), ("○", "grey"))
 
     def compose(self) -> ComposeResult:
         text = Text()
@@ -632,7 +639,6 @@ class NexusApp(App):
             yield Label("Nexus TUI", id="sidebar-header")
             with TabbedContent(initial="tab-servers"):
                 with TabPane("Servers", id="tab-servers"):
-                    # Use a CSS class 'split-view' instead of inline style
                     with Horizontal(classes="split-view"):
                         yield ListView(id="server-list") 
                         yield ListView(id="channel-list")
@@ -791,16 +797,21 @@ class NexusApp(App):
         cl.focus()
 
     @work
-    async def populate_members(self, members: List[discord.Member]):
+    async def populate_members(self, members: List[Union[discord.Member, discord.User, discord.ClientUser]]):
         ml = self.query_one("#member-list", ListView)
         ml.clear()
         def sort_key(m):
-            return {"online": 0, "streaming": 1, "idle": 2, "dnd": 3, "offline": 4}.get(str(m.status), 5)
+            # SAFE ACCESS: getattr returns "offline" if status is missing
+            status = str(getattr(m, "status", "offline"))
+            return {"online": 0, "streaming": 1, "idle": 2, "dnd": 3, "offline": 4}.get(status, 5)
         
         m_list = sorted(members, key=sort_key)
         count = 0
         for m in m_list:
-            if str(m.status) == "offline": continue
+            # SAFE ACCESS: check status attribute presence
+            status = str(getattr(m, "status", "offline"))
+            if status == "offline": continue
+            
             ml.append(MemberItem(m))
             count += 1
             if count > 200: break
